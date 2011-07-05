@@ -33,6 +33,11 @@
 #include <GLES2/gl2.h>
 #include <EGL/egl.h>
 
+//JK
+#include <sys/epoll.h>
+#include <sys/socket.h>
+//#include <netdb.h>
+
 struct display {
 	struct wl_display *display;
 	struct wl_visual *premultiplied_argb_visual;
@@ -361,10 +366,16 @@ main(int argc, char **argv)
 	create_surface(&window);
 	init_gl(&window);
 
-	redraw(window.surface, &window, 0);
+	//redraw(window.surface, &window, 0);
 
-	while (true)
-		wl_display_iterate(display.display, display.mask);
+	while (true){
+		//wl_display_iterate(display.display, display.mask);
+		//set up server connection
+		//add to epoll
+			//does client already have epoll?
+		//set up pairs of connections 
+			//how does client communicate to server?
+	}
 
 	return 0;
 }
