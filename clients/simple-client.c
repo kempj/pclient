@@ -34,10 +34,12 @@
 #include <EGL/egl.h>
 
 //JK
+//#include <sys/types.h>
+//#include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
-//#include <netdb.h>
-
+#include <netdb.h>
+#include <errno.h>
 struct display {
 	struct wl_display *display;
 	struct wl_visual *premultiplied_argb_visual;
@@ -239,7 +241,7 @@ create_surface(struct window *window)
 			     window->egl_surface, window->display->egl.ctx);
 	assert(ret == EGL_TRUE);
 }
-
+/*
 static void
 redraw(struct wl_surface *surface, void *data, uint32_t time)
 {
@@ -295,7 +297,7 @@ redraw(struct wl_surface *surface, void *data, uint32_t time)
 	wl_display_frame_callback(window->display->display,
 				  window->surface,
 				  redraw, window);
-}
+}*/
 
 static void
 compositor_handle_visual(void *data,
@@ -341,6 +343,68 @@ event_mask_update(uint32_t mask, void *data)
 	return 0;
 }
 
+struct rwl_connection;
+
+typedef int (*dispatch_func_ptr)(struct rwl_connection *rc, int epoll_fd);
+
+
+struct wl_buffer {
+	char data[4096];
+	int head, tail;
+};
+
+struct rwl_connection{
+	struct wl_buffer in, out;
+	struct wl_buffer fds_in, fds_out;
+	int fd_to;
+	int fd_from;
+	dispatch_func_ptr dispatch;
+	struct display *display;
+};
+
+int
+rwl_client_init( struct rwl_connection *rc, int epoll_fd)
+{
+	struct epoll_event ep_remote, ep_local;
+	struct rwl_connection *local_rc, *remote_rc;
+	memset(local_rc, 0, sizeof *local_rc);
+	memset(remote_rc, 0, sizeof *remote_rc);
+
+	//create new remote socket/read in
+	struct sockaddr_storage incoming_addr;
+	socklen_t size;
+	int remote_fd = accept(rc->fd_from,(struct sockaddr *) &incoming_addr, size);
+
+	//create new socket to compositor
+	struct display display;
+	memset(&display, 0, sizeof display);
+	display.display = wl_display_connect(NULL);
+
+	//pack and send rc for remote connection
+	remote_rc->fd_to = rwl_get_display_fd(&(display.display));
+	remote_rc->fd_from = remote_fd;
+	//where do I store display?
+	remote_rc->dispatch = rwl_client_forward;
+
+	ep_remote.data.ptr = remote_rc;
+	epoll_ctl(epoll_fd,EPOLL_CTL_ADD, remote_rc->fd_from, &ep_remote);
+	rwl_client_forward(remote_rc);
+	
+	//pack and send rc for local connection(to compositor)
+	local_rc->fd_from = remote_rc->fd_to;
+	local_rc->fd_to = remote_rc->fd_from;
+	local_rc->dispatch = rwl_client_forward;
+
+	ep_local.data.ptr = local_rc;
+	epoll_ctl(epoll_fd,EPOLL_CTL_ADD, local_rc->fd_from, &ep_local);
+
+	rwl_client_forward(local_rc);
+
+	
+	
+	return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -366,15 +430,42 @@ main(int argc, char **argv)
 	create_surface(&window);
 	init_gl(&window);
 
-	//redraw(window.surface, &window, 0);
 
+	//I need a new struct, something with a connection, and another fd
+	int err, fd = 0, epoll_fd = 0, len, i = 0;
+	struct addrinfo *local_address_info;
+	
+	epoll_fd = epoll_create(16);
+
+	//set up server connection
+	if((err = getaddrinfo(NULL, "35000", NULL, &local_address_info)) != 0) {
+		fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(err));
+		return EXIT_FAILURE;
+	}
+	fd = socket(local_address_info->ai_family, 
+			local_address_info->ai_socktype,
+			local_address_info->ai_protocol);
+	bind(fd,local_address_info->ai_addr,local_address_info->ai_addrlen);
+	listen(fd,8);
+	//add to epoll
+	struct epoll_event ep[32];
+	struct epoll_event ep_in;
+	struct rwl_connection rc, *rc_out;
+
+	memset(&rc, 0, sizeof rc);
+
+	rc.fd_from = fd;
+	rc.dispatch = rwl_client_init;
+	ep_in.data.ptr = &rc;
+	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ep_in);
+	printf("Connected\n");//jkdebug
 	while (true){
-		//wl_display_iterate(display.display, display.mask);
-		//set up server connection
-		//add to epoll
-			//does client already have epoll?
-		//set up pairs of connections 
-			//how does client communicate to server?
+		len = epoll_wait(epoll_fd, ep, 32, -1);
+		printf("epoll read\n");
+		for(i = 0; i < len; i++){
+			rc_out = ep[i].data.ptr;
+			rc_out->dispatch(rc_out, epoll_fd);
+		}
 	}
 
 	return 0;
